@@ -1,3 +1,4 @@
+/*
 # Backend for Microblogging System
 
 ## Requirements:
@@ -11,6 +12,7 @@
 1. Ensure MongoDB is running and accessible.
 2. Modify `.env` file to include DB_CONNECTION_STRING.
 3. Update routes corresponding to new features.
+*/
 
 const express = require('express');
 const mongoose = require('mongoose');
