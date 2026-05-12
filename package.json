@@ -1,0 +1,28 @@
+{
+  "name": "ltweb",
+  "version": "1.0.0",
+  "description": "Kiểm tra trên mongo xem ở phần IP chỗ SECURITY/Database and Network Access/IP Access List ô đã thêm cái IP 0.0.0.0 chưa chứ t kiểm tra trên code là thấy ổn áp hết rồi á.",
+  "main": "backend.js",
+  "scripts": {
+    "start": "node backend.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/24520314-HoangDuc/LTWeb.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/24520314-HoangDuc/LTWeb/issues"
+  },
+  "homepage": "https://github.com/24520314-HoangDuc/LTWeb#readme",
+  "dependencies": {
+    "body-parser": "^2.2.2",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongoose": "^9.6.2"
+  }
+}

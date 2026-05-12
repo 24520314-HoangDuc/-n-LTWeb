@@ -208,7 +208,23 @@ app.delete('/api/posts/:postId/comments/:commentId', async (req, res) => {
             return res.status(404).json({ message: 'Comment not found' });
         }
 
-        comment.deleteOne();
+        const idsToRemove = new Set([String(comment._id)]);
+        let changed = true;
+
+        while (changed) {
+            changed = false;
+            post.replies.forEach(reply => {
+                const replyParentId = reply.parentId ? String(reply.parentId) : null;
+                const replyId = String(reply._id);
+
+                if (replyParentId && idsToRemove.has(replyParentId) && !idsToRemove.has(replyId)) {
+                    idsToRemove.add(replyId);
+                    changed = true;
+                }
+            });
+        }
+
+        post.replies = post.replies.filter(reply => !idsToRemove.has(String(reply._id)));
         post.updatedAt = new Date();
         await post.save();
 

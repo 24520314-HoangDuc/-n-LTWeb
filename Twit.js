@@ -12,47 +12,12 @@ const state = {
 	following: new Set(["ana"]),
 	hiddenPostIds: new Set(),
 	blockedUserIds: new Set(),
-	posts: [
-		{
-			id: 1,
-			userId: "ana",
-			title: "Input spacing",
-			content: "Inputs should have more breathing room. Don't make the padding of input fields same as button.",
-			createdAt: new Date(Date.now() - 1000 * 60 * 15),
-			likedBy: new Set(["me"]),
-			attachment: null,
-			replies: [
-				{ userId: "khan", text: "Looks clean already. Add a bit more spacing under title.", createdAt: new Date(Date.now() - 1000 * 60 * 13) },
-				{ userId: "linh", text: "Love this direction.", createdAt: new Date(Date.now() - 1000 * 60 * 11) },
-				{ userId: "me", text: "Would like to see hover state too.", createdAt: new Date(Date.now() - 1000 * 60 * 10) }
-			]
-		},
-		{
-			id: 2,
-			userId: "khan",
-			title: "Mobile first",
-			content: "If your component works on mobile first, desktop is usually easy.",
-			createdAt: new Date(Date.now() - 1000 * 60 * 58),
-			likedBy: new Set(),
-			attachment: null,
-			replies: [
-				{ userId: "ana", text: "Agree, always start from tight constraints.", createdAt: new Date(Date.now() - 1000 * 60 * 50) }
-			]
-		},
-		{
-			id: 3,
-			userId: "me",
-			title: "Progress update",
-			content: "This is my first post in Twit Replica. Building create, like, reply view and delete today.",
-			createdAt: new Date(Date.now() - 1000 * 60 * 120),
-			likedBy: new Set(["ana"]),
-			attachment: null,
-			replies: []
-		}
-	],
+	posts: [],
 	replyModeByPost: new Map(),
 	activeRepostPostId: null,
-	activeDetailPostId: null
+	activeDetailPostId: null,
+	isLoadingPosts: true,
+	loadError: ""
 };
 
 const refs = {
@@ -93,6 +58,7 @@ const refs = {
 
 let commentIdSeed = 1000;
 let pendingConfirmAction = null;
+const API_BASE = "http://localhost:3000/api";
 
 function isModalOpen(modal) {
 	return modal && !modal.classList.contains("hidden");
@@ -121,15 +87,88 @@ function runConfirmAction() {
 	action();
 }
 
+function apiUrl(path) {
+	return `${API_BASE}${path}`;
+}
+
+async function requestJson(path, options = {}) {
+	const response = await fetch(apiUrl(path), {
+		headers: {
+			"Content-Type": "application/json",
+			...(options.headers || {})
+		},
+		...options
+	});
+	const text = await response.text();
+	const data = text ? JSON.parse(text) : null;
+	if (!response.ok) {
+		throw new Error(data?.message || `Request failed: ${response.status}`);
+	}
+	return data;
+}
+
+function mapComment(comment) {
+	return {
+		id: String(comment._id || comment.id || commentIdSeed++),
+		userId: comment.userId,
+		text: comment.text,
+		createdAt: comment.createdAt ? new Date(comment.createdAt) : new Date(),
+		parentId: comment.parentId ? String(comment.parentId) : null,
+		likedBy: comment.likedBy instanceof Set ? comment.likedBy : new Set(Array.isArray(comment.likedBy) ? comment.likedBy : [])
+	};
+}
+
+function mapPost(post) {
+	return {
+		id: String(post._id || post.id),
+		userId: post.userId,
+		title: post.title || "Untitled post",
+		content: post.content || "",
+		createdAt: post.createdAt ? new Date(post.createdAt) : new Date(),
+		updatedAt: post.updatedAt ? new Date(post.updatedAt) : new Date(),
+		likedBy: new Set(Array.isArray(post.likedBy) ? post.likedBy : []),
+		attachment: post.attachment || null,
+		replies: (post.replies || []).map(mapComment)
+	};
+}
+
+function syncPostFromServer(postData) {
+	const mapped = mapPost(postData);
+	const index = state.posts.findIndex(post => post.id === mapped.id);
+	if (index >= 0) {
+		state.posts[index] = mapped;
+	} else {
+		state.posts.unshift(mapped);
+	}
+	return mapped;
+}
+
+async function loadPostsFromMongo() {
+	state.isLoadingPosts = true;
+	state.loadError = "";
+	renderPosts();
+	try {
+		const posts = await requestJson("/posts", { method: "GET" });
+		state.posts = Array.isArray(posts) ? posts.map(mapPost) : [];
+		normalizeComments();
+	} catch (error) {
+		state.loadError = error.message;
+		state.posts = [];
+	} finally {
+		state.isLoadingPosts = false;
+		rerender();
+	}
+}
+
 function normalizeComments() {
 	state.posts.forEach(post => {
 		post.replies = (post.replies || []).map(reply => ({
-			id: reply.id || commentIdSeed++,
+			id: String(reply.id || reply._id || commentIdSeed++),
 			userId: reply.userId,
 			text: reply.text,
 			createdAt: reply.createdAt instanceof Date ? reply.createdAt : new Date(reply.createdAt),
-			parentId: typeof reply.parentId === "number" ? reply.parentId : null,
-			likedBy: reply.likedBy instanceof Set ? reply.likedBy : new Set()
+			parentId: reply.parentId ? String(reply.parentId) : null,
+			likedBy: reply.likedBy instanceof Set ? reply.likedBy : new Set(Array.isArray(reply.likedBy) ? reply.likedBy : [])
 		}));
 	});
 }
@@ -284,20 +323,29 @@ function buildReplyItem(reply) {
 	return item;
 }
 
-function addCommentToPost(postId, text, parentId = null) {
-	const post = state.posts.find(item => item.id === postId);
-	if (!post || !text.trim()) {
+async function addCommentToPost(postId, text, parentId = null) {
+	if (!text.trim()) {
 		return false;
 	}
-	post.replies.push({
-		id: commentIdSeed++,
-		userId: state.currentUserId,
-		text: text.trim(),
-		createdAt: new Date(),
-		parentId,
-		likedBy: new Set()
-	});
-	return true;
+	const post = state.posts.find(item => item.id === postId);
+	if (!post) {
+		return false;
+	}
+	try {
+		const updatedPost = await requestJson(`/posts/${postId}/comments`, {
+			method: "POST",
+			body: JSON.stringify({
+				userId: state.currentUserId,
+				text: text.trim(),
+				parentId
+			})
+		});
+		syncPostFromServer(updatedPost);
+		return true;
+	} catch (error) {
+		console.error("Failed to add comment:", error);
+		return false;
+	}
 }
 
 function getCommentChildren(post, parentId) {
@@ -325,18 +373,17 @@ function deleteComment(postId, commentId) {
 	if (!post) {
 		return;
 	}
-	const removeSet = new Set([commentId]);
-	let changed = true;
-	while (changed) {
-		changed = false;
-		post.replies.forEach(reply => {
-			if (reply.parentId !== null && removeSet.has(reply.parentId) && !removeSet.has(reply.id)) {
-				removeSet.add(reply.id);
-				changed = true;
+	requestJson(`/posts/${postId}/comments/${commentId}`, { method: "DELETE" })
+		.then(updatedPost => {
+			syncPostFromServer(updatedPost);
+			rerender();
+			if (state.activeDetailPostId === postId) {
+				openPostDetail(postId);
 			}
+		})
+		.catch(error => {
+			console.error("Failed to delete comment:", error);
 		});
-	}
-	post.replies = post.replies.filter(reply => !removeSet.has(reply.id));
 }
 
 function renderAttachment(container, post) {
@@ -517,6 +564,16 @@ function renderProfileView() {
 }
 
 function renderPosts() {
+	if (state.isLoadingPosts) {
+		refs.feedList.innerHTML = '<div class="card" style="padding:14px">Loading posts from MongoDB...</div>';
+		return;
+	}
+
+	if (state.loadError) {
+		refs.feedList.innerHTML = `<div class="card" style="padding:14px">Unable to load posts: ${state.loadError}</div>`;
+		return;
+	}
+
 	const posts = getFilteredPosts().slice().sort((a, b) => b.createdAt - a.createdAt);
 	refs.feedList.innerHTML = "";
 
@@ -633,13 +690,14 @@ function renderPosts() {
 		const inlineCommentInput = node.querySelector(".inline-comment-input");
 		const inlineCommentSend = node.querySelector(".inline-comment-send");
 		inlineCommentSend.addEventListener("click", () => {
-			const sent = addCommentToPost(post.id, inlineCommentInput.value, null);
-			if (!sent) {
-				return;
-			}
-			inlineCommentInput.value = "";
-			rerender();
-			openPostDetail(post.id);
+			addCommentToPost(post.id, inlineCommentInput.value, null).then(sent => {
+				if (!sent) {
+					return;
+				}
+				inlineCommentInput.value = "";
+				rerender();
+				openPostDetail(post.id);
+			});
 		});
 		inlineCommentInput.addEventListener("keydown", event => {
 			if (event.key !== "Enter" || event.shiftKey) {
@@ -711,12 +769,13 @@ function renderCommentThread(post) {
 			});
 
 			sendBtn.addEventListener("click", () => {
-				const sent = addCommentToPost(post.id, replyInput.value, comment.id);
-				if (!sent) {
-					return;
-				}
-				rerender();
-				openPostDetail(post.id);
+				addCommentToPost(post.id, replyInput.value, comment.id).then(sent => {
+					if (!sent) {
+						return;
+					}
+					rerender();
+					openPostDetail(post.id);
+				});
 			});
 			replyInput.addEventListener("keydown", event => {
 				if (event.key !== "Enter" || event.shiftKey) {
@@ -812,12 +871,13 @@ function openPostDetail(postId) {
 	});
 
 	detailCommentSend.addEventListener("click", () => {
-		const sent = addCommentToPost(post.id, detailCommentInput.value, null);
-		if (!sent) {
-			return;
-		}
-		rerender();
-		openPostDetail(post.id);
+			addCommentToPost(post.id, detailCommentInput.value, null).then(sent => {
+				if (!sent) {
+					return;
+				}
+				rerender();
+				openPostDetail(post.id);
+			});
 	});
 
 	detailCommentInput.addEventListener("keydown", event => {
@@ -865,7 +925,7 @@ function closeRepostModal() {
 	state.activeRepostPostId = null;
 }
 
-function createRepost() {
+async function createRepost() {
 	if (!state.activeRepostPostId) {
 		return;
 	}
@@ -875,26 +935,28 @@ function createRepost() {
 		return;
 	}
 
-	const newPost = {
-		id: Date.now(),
-		userId: state.currentUserId,
-		title: title || "Repost",
-		content,
-		createdAt: new Date(),
-		likedBy: new Set(),
-		attachment: {
-			type: "repost",
-			name: "Reposted post",
-			originalPostId: state.activeRepostPostId
-		},
-		replies: []
-	};
-
-	state.posts.unshift(newPost);
-	closeRepostModal();
-	state.viewMode = "home";
-	refs.feedFilter.value = "all";
-	rerender();
+	try {
+		const created = await requestJson("/posts", {
+			method: "POST",
+			body: JSON.stringify({
+				userId: state.currentUserId,
+				title: title || "Repost",
+				content,
+				attachment: {
+					type: "repost",
+					name: "Reposted post",
+					originalPostId: state.activeRepostPostId
+				}
+			})
+		});
+		syncPostFromServer(created);
+		closeRepostModal();
+		state.viewMode = "home";
+		refs.feedFilter.value = "all";
+		rerender();
+	} catch (error) {
+		console.error("Failed to create repost:", error);
+	}
 }
 
 function selectProfile(userId, mode = "profile") {
@@ -930,7 +992,7 @@ function closeComposer() {
 	refs.composerModal.setAttribute("aria-hidden", "true");
 }
 
-function createPost() {
+async function createPost() {
 	const title = refs.postTitle.value.trim();
 	const content = refs.postInput.value.trim();
 	if (!title && !content) {
@@ -939,55 +1001,78 @@ function createPost() {
 
 	const selectedFile = refs.postAttachment.files[0] || null;
 
-	function finalizePost(attachment) {
-		const newPost = {
-			id: Date.now(),
-			userId: state.currentUserId,
-			title: title || "Untitled post",
-			content,
-			createdAt: new Date(),
-			likedBy: new Set(),
-			attachment,
-			replies: []
-		};
+	async function finalizePost(attachment) {
+		try {
+			const created = await requestJson("/posts", {
+				method: "POST",
+				body: JSON.stringify({
+					userId: state.currentUserId,
+					title: title || "Untitled post",
+					content,
+					attachment
+				})
+			});
+			syncPostFromServer(created);
+			resetComposer();
+			closeComposer();
+			state.viewMode = "home";
+			refs.feedFilter.value = "all";
+			rerender();
+		} catch (error) {
+			console.error("Failed to create post:", error);
+		}
+	}
 
-		state.posts.unshift(newPost);
-		resetComposer();
-		closeComposer();
-		state.viewMode = "home";
-		refs.feedFilter.value = "all";
-		rerender();
+	function readFileAsDataUrl(file) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(String(reader.result || ""));
+			reader.onerror = () => reject(new Error("Cannot read file."));
+			reader.readAsDataURL(file);
+		});
 	}
 
 	if (!selectedFile) {
-		finalizePost(null);
+		await finalizePost(null);
 		return;
 	}
 
 	if (selectedFile.type.startsWith("audio/")) {
-		finalizePost({
-			type: "audio",
-			name: selectedFile.name,
-			url: URL.createObjectURL(selectedFile)
-		});
+		try {
+			await finalizePost({
+				type: "audio",
+				name: selectedFile.name,
+				url: await readFileAsDataUrl(selectedFile)
+			});
+		} catch {
+			await finalizePost(null);
+		}
 		return;
 	}
 
 	if (selectedFile.type.startsWith("image/")) {
-		finalizePost({
-			type: "image",
-			name: selectedFile.name,
-			url: URL.createObjectURL(selectedFile)
-		});
+		try {
+			await finalizePost({
+				type: "image",
+				name: selectedFile.name,
+				url: await readFileAsDataUrl(selectedFile)
+			});
+		} catch {
+			await finalizePost(null);
+		}
 		return;
 	}
 
 	if (selectedFile.type.startsWith("video/")) {
-		finalizePost({
-			type: "video",
-			name: selectedFile.name,
-			url: URL.createObjectURL(selectedFile)
-		});
+		try {
+			await finalizePost({
+				type: "video",
+				name: selectedFile.name,
+				url: await readFileAsDataUrl(selectedFile)
+			});
+		} catch {
+			await finalizePost(null);
+		}
 		return;
 	}
 
@@ -1141,6 +1226,6 @@ function rerender() {
 	renderPosts();
 }
 
-normalizeComments();
 bindEvents();
 rerender();
+loadPostsFromMongo();
