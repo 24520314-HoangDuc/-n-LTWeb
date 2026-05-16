@@ -1,61 +1,49 @@
-# LTWeb - Status Report
+# LTWeb
 
-## 1. Tinh trang hien tai
+Ghi chú rà soát nhanh cho repo này, tập trung vào luồng chạy và các rủi ro khi kết nối MongoDB.
 
-- Frontend va backend da ket noi theo luong API.
-- Du lieu sample trong Twit.js da duoc loai bo.
-- Feed hien lay bai viet tu MongoDB qua endpoint `/api/posts`.
-- Cac thao tac tao bai viet, repost, them/xoa comment da goi API backend va luu DB.
-- Backend khoi dong thanh cong bang `npm start`.
-- Van con loi ket noi Atlas: khong the ket noi den cluster do van de IP Access / network access.
+## Luồng hiện tại
 
-## 2. Tien trinh da hoan thanh
+- Frontend gọi API tại `http://localhost:3000/api`.
+- Backend đọc `DB_CONNECTION_STRING` từ `.env`, nếu thiếu thì fallback sang chuỗi mẫu trong `backend.js`.
+- `mongoose.connect()` đang dùng `serverSelectionTimeoutMS: 5000`, nên lỗi mạng hoặc Atlas chậm phản hồi sẽ lộ ra khá nhanh.
 
-### Backend
+## Các lỗi tiềm năng liên quan đến MongoDB
 
-- Da xu ly merge conflict trong backend.js.
-- Da cai dependencies can thiet: express, mongoose, body-parser, dotenv.
-- Da them script start trong package.json.
-- Da bo sung xoa comment theo kieu cascade (xoa comment con cung nhanh).
+1. IP Access List của Atlas chưa cho phép IP hiện tại.
+- Dấu hiệu: backend báo `MongoDB connection error` với lỗi kiểu `not authorized`, `IP not allowed`, hoặc timeout.
+- Cần kiểm tra: `Security > Network Access` trong Atlas, thêm đúng IP public đang dùng hoặc tạm mở `0.0.0.0/0` để test.
 
-### Frontend
+2. Sai cluster, sai project, hoặc sai replica set trong chuỗi kết nối.
+- Dấu hiệu: DNS resolve được nhưng `server selection timed out`, `ReplicaSetNoPrimary`, hoặc không tìm thấy host.
+- Cần kiểm tra: hostname trong `.env` có đúng cluster hiện tại không, và nếu dùng URI nhiều host thì `replicaSet` phải khớp với cluster.
 
-- Da loai bo danh sach posts mau hard-code trong Twit.js.
-- Da them luong load du lieu tu API khi khoi dong trang.
-- Da map du lieu tu MongoDB ve model frontend (post/comment/date/likedBy).
-- Da chuyen tao bai viet va comment sang call API.
-- Da xu ly loading/error state khi khong load duoc du lieu tu backend.
+3. Sai username/password hoặc user chưa có quyền vào database.
+- Dấu hiệu: `Authentication failed`, `bad auth`, hoặc kết nối được nhưng truy vấn bị từ chối.
+- Cần kiểm tra: `Database Access` trong Atlas, quyền của user, và các ký tự đặc biệt trong password có được encode đúng chưa.
 
-### Cau hinh
+4. Dùng nhầm file chứa chuỗi kết nối.
+- Hiện chuỗi kết nối đang xuất hiện trong `.env`, nhưng file `.gitignore` lại đang chứa một biến `MONGODB_URI` thật.
+- Dấu hiệu: khi chỉnh môi trường mà backend vẫn lấy cấu hình cũ, hoặc người khác mở repo thấy secret lộ ra.
+- Cần kiểm tra: chỉ giữ secret ở `.env`, còn `.gitignore` nên là danh sách file/folder cần bỏ qua.
 
-- Da cap nhat .env theo chuoi ket noi MongoDB.
-- Da thu ca 2 dang URI:
-- `mongodb+srv://...`
-- `mongodb://host1,host2,host3/...`
-- Da xac nhan DNS va cong 27017 co the resolve/test o moi truong hien tai.
+5. DNS/SRV hoặc mạng cục bộ chặn kết nối ra ngoài.
+- Dấu hiệu: lỗi kiểu `ENOTFOUND`, `getaddrinfo`, hoặc timeout dù IP đã allow.
+- Cần kiểm tra: DNS của máy, VPN/proxy, firewall, và thử chạy lại bằng URI SRV lẫn URI nhiều host.
 
-## 3. Van de dang ton tai
+6. Thời gian chờ quá ngắn so với mạng thực tế.
+- Dấu hiệu: lúc thì connect được, lúc thì fail ngẫu nhiên.
+- Cần kiểm tra: thử tăng `serverSelectionTimeoutMS` tạm thời để phân biệt lỗi mạng chậm với lỗi cấu hình thật.
 
-- Ung dung da chay, nhung MongoDB Atlas van tra loi theo huong "IP chua duoc allow".
-- Nguyen nhan kha nang cao:
-- IP public dang thay doi (Wi-Fi/VPN/Proxy).
-- Rule IP Access List duoc them nham project hoac chua apply dung cluster.
-- Mat khau user DB trong chuoi ket noi khong dung.
+## Checklist debug nhanh
 
-## 4. Viec can lam tiep theo
+- Xác nhận backend đang đọc đúng `DB_CONNECTION_STRING` trong `.env`.
+- Xác nhận IP public hiện tại đã được allow trong Atlas.
+- Xác nhận user DB đúng mật khẩu và đúng quyền.
+- Xác nhận cluster/replica set trùng với URI.
+- Xác nhận máy không bị VPN, proxy, hoặc firewall chặn ra ngoài.
 
-1. Trong Atlas, vao Network Access va them lai IP public hien tai (hoac tam mo `0.0.0.0/0` de test).
-2. Kiem tra dung project va dung cluster trong Atlas.
-3. Kiem tra lai Database Access (username/password) trong chuoi ket noi.
-4. Sau khi cap nhat Atlas, chay lai:
+## Ghi chú thêm
 
-```bash
-npm start
-```
-
-5. Khi thay log `MongoDB connected successfully`, mo Twit.html de test feed/create/comment.
-
-## 5. Ghi chu nhanh
-
-- Trang thai code hien tai: co the chay server va goi API.
-- Blocker chinh hien tai: quyen truy cap MongoDB Atlas theo IP/network.
+- Nếu backend vẫn không connect, log lỗi đầy đủ của `mongoose.connect()` sẽ quyết định nguyên nhân chính xác hơn log rút gọn.
+- Khi debug mạng, nên test theo thứ tự: DNS -> auth -> IP allowlist -> replica set -> timeout.

@@ -22,6 +22,52 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.DB_CONNECTION_STRING || 'mongodb://USERNAME:PASSWORD@HOST:27017/DATABASE_NAME';
 
+function toCommentPacket(comment) {
+    return {
+        id: String(comment._id),
+        userId: comment.userId,
+        text: comment.text,
+        parentId: comment.parentId ? String(comment.parentId) : null,
+        likedBy: Array.isArray(comment.likedBy) ? comment.likedBy : [],
+        createdAt: comment.createdAt,
+        updatedAt: comment.updatedAt || comment.createdAt
+    };
+}
+
+function toAttachmentPacket(attachment) {
+    if (!attachment) {
+        return null;
+    }
+
+    return {
+        type: attachment.type || null,
+        name: attachment.name || "",
+        url: attachment.url || "",
+        text: attachment.text || "",
+        originalPostId: attachment.originalPostId ? String(attachment.originalPostId) : null
+    };
+}
+
+function toPostPacket(post) {
+    return {
+        id: String(post._id),
+        userId: post.userId,
+        title: post.title,
+        content: post.content,
+        attachment: toAttachmentPacket(post.attachment),
+        likedBy: Array.isArray(post.likedBy) ? post.likedBy : [],
+        replies: Array.isArray(post.replies) ? post.replies.map(toCommentPacket) : [],
+        hiddenBy: Array.isArray(post.hiddenBy) ? post.hiddenBy : [],
+        blockedBy: Array.isArray(post.blockedBy) ? post.blockedBy : [],
+        createdAt: post.createdAt,
+        updatedAt: post.updatedAt
+    };
+}
+
+function sendPost(res, post, status = 200) {
+    return res.status(status).json(toPostPacket(post));
+}
+
 // MongoDB connection
 mongoose.connect(MONGODB_URI, {
     connectTimeoutMS: 10000,
@@ -37,6 +83,7 @@ const commentSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     text: { type: String, required: true },
     parentId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    likedBy: [{ type: String }],
     createdAt: { type: Date, default: Date.now }
 }, { _id: true });
 
@@ -72,7 +119,7 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/posts', async (_req, res) => {
     try {
         const posts = await Post.find().sort({ createdAt: -1 }).lean();
-        res.json(posts);
+        res.json(posts.map(toPostPacket));
     } catch (err) {
         res.status(500).json({ message: 'Failed to load posts', error: err.message });
     }
@@ -84,7 +131,7 @@ app.get('/api/posts/:id', async (req, res) => {
         if (!post) {
             return res.status(404).json({ message: 'Post not found' });
         }
-        res.json(post);
+        res.json(toPostPacket(post));
     } catch (err) {
         res.status(400).json({ message: 'Invalid post id', error: err.message });
     }
@@ -105,7 +152,7 @@ app.post('/api/posts', async (req, res) => {
             attachment: attachment || null
         });
 
-        res.status(201).json(newPost);
+        sendPost(res, newPost, 201);
     } catch (err) {
         res.status(500).json({ message: 'Failed to create post', error: err.message });
     }
@@ -123,7 +170,7 @@ app.patch('/api/posts/:id', async (req, res) => {
             return res.status(404).json({ message: 'Post not found' });
         }
 
-        res.json(post);
+        sendPost(res, post);
     } catch (err) {
         res.status(400).json({ message: 'Failed to update post', error: err.message });
     }
@@ -159,7 +206,7 @@ app.post('/api/posts/:id/comments', async (req, res) => {
         post.updatedAt = new Date();
         await post.save();
 
-        res.status(201).json(post);
+        sendPost(res, post, 201);
     } catch (err) {
         res.status(500).json({ message: 'Failed to add comment', error: err.message });
     }
@@ -188,7 +235,7 @@ app.patch('/api/posts/:postId/comments/:commentId', async (req, res) => {
         post.updatedAt = new Date();
         await post.save();
 
-        res.json(post);
+        sendPost(res, post);
     } catch (err) {
         res.status(400).json({ message: 'Failed to update comment', error: err.message });
     }
@@ -228,7 +275,7 @@ app.delete('/api/posts/:postId/comments/:commentId', async (req, res) => {
         post.updatedAt = new Date();
         await post.save();
 
-        res.json(post);
+        sendPost(res, post);
     } catch (err) {
         res.status(400).json({ message: 'Failed to delete comment', error: err.message });
     }
@@ -257,9 +304,48 @@ app.post('/api/posts/:id/like', async (req, res) => {
         post.updatedAt = new Date();
         await post.save();
 
-        res.json(post);
+        sendPost(res, post);
     } catch (err) {
         res.status(500).json({ message: 'Failed to toggle like', error: err.message });
+    }
+});
+
+app.post('/api/posts/:postId/comments/:commentId/like', async (req, res) => {
+    try {
+        const { postId, commentId } = req.params;
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ message: 'userId is required' });
+        }
+
+        const post = await Post.findById(postId);
+        if (!post) {
+            return res.status(404).json({ message: 'Post not found' });
+        }
+
+        const comment = post.replies.id(commentId);
+        if (!comment) {
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+
+        if (!Array.isArray(comment.likedBy)) {
+            comment.likedBy = [];
+        }
+
+        const likedIndex = comment.likedBy.indexOf(userId);
+        if (likedIndex >= 0) {
+            comment.likedBy.splice(likedIndex, 1);
+        } else {
+            comment.likedBy.push(userId);
+        }
+
+        post.updatedAt = new Date();
+        await post.save();
+
+        sendPost(res, post);
+    } catch (err) {
+        res.status(500).json({ message: 'Failed to toggle comment like', error: err.message });
     }
 });
 
@@ -286,7 +372,7 @@ app.post('/api/posts/:id/repost', async (req, res) => {
             }
         });
 
-        res.status(201).json(repost);
+        sendPost(res, repost, 201);
     } catch (err) {
         res.status(500).json({ message: 'Failed to create repost', error: err.message });
     }

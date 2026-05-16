@@ -1,0 +1,89 @@
+[
+  {
+    "seedKey": "me-001",
+    "userId": "me",
+    "title": "Morning layout sweep",
+    "content": "Cleaned up the feed spacing and tightened the card rhythm. Small change, better scanability.",
+    "likedBy": ["ana"],
+    "replies": []
+  },
+  {
+    "seedKey": "me-002",
+    "userId": "me",
+    "title": "Tiny API bridge",
+    "content": "Frontend now talks to Mongo through the backend instead of keeping everything local. Less fake state, more real data.",
+    "likedBy": ["ana", "khan"],
+    "replies": []
+  },
+  {
+    "seedKey": "me-003",
+    "userId": "me",
+    "title": "Repost: Ana's grid note",
+    "content": "This is the kind of note I want to keep around in the feed.",
+    "attachment": {
+      "type": "repost",
+      "name": "Reposted post",
+      "originalSeedKey": "ana-001"
+    },
+    "likedBy": ["khan"],
+    "replies": []
+  },
+  {
+    "seedKey": "ana-001",
+    "userId": "ana",
+    "title": "Grid study",
+    "content": "Tried a two-column layout with stronger spacing between metadata and body. The feed reads faster now.",
+    "likedBy": ["me", "khan"],
+    "replies": []
+  },
+  {
+    "seedKey": "ana-002",
+    "userId": "ana",
+    "title": "Thought on avatars",
+    "content": "Profile avatars work better when they stay small and predictable. Big avatars steal attention from the post.",
+    "likedBy": ["me"],
+    "replies": []
+  },
+  {
+    "seedKey": "ana-003",
+    "userId": "ana",
+    "title": "Repost: Khan's note",
+    "content": "Useful reminder on keeping the app state narrow.",
+    "attachment": {
+      "type": "repost",
+      "name": "Reposted post",
+      "originalSeedKey": "khan-001"
+    },
+    "likedBy": [],
+    "replies": []
+  },
+  {
+    "seedKey": "khan-001",
+    "userId": "khan",
+    "title": "Weekend bike reset",
+    "content": "Shipped code in the morning and took the bike out at sunset. Best way to keep the brain moving.",
+    "likedBy": ["me"],
+    "replies": []
+  },
+  {
+    "seedKey": "khan-002",
+    "userId": "khan",
+    "title": "Comment payload check",
+    "content": "Persisting comment likes in the backend makes the feed feel much more real. Local-only state was the missing bridge.",
+    "likedBy": ["ana"],
+    "replies": []
+  },
+  {
+    "seedKey": "khan-003",
+    "userId": "khan",
+    "title": "Repost: Frontend bridge note",
+    "content": "A small repack of the feed data solves a surprising amount of friction.",
+    "attachment": {
+      "type": "repost",
+      "name": "Reposted post",
+      "originalSeedKey": "me-002"
+    },
+    "likedBy": ["ana"],
+    "replies": []
+  }
+]

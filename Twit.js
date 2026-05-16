@@ -60,6 +60,16 @@ let commentIdSeed = 1000;
 let pendingConfirmAction = null;
 const API_BASE = "http://localhost:3000/api";
 
+function getUserInfo(userId) {
+	return users[userId] || {
+		id: userId,
+		name: "Unknown user",
+		username: String(userId || "unknown"),
+		bio: "Imported from database.",
+		color: "#6b7280"
+	};
+}
+
 function isModalOpen(modal) {
 	return modal && !modal.classList.contains("hidden");
 }
@@ -100,11 +110,32 @@ async function requestJson(path, options = {}) {
 		...options
 	});
 	const text = await response.text();
-	const data = text ? JSON.parse(text) : null;
+	let data = null;
+	if (text) {
+		try {
+			data = JSON.parse(text);
+		} catch {
+			data = { message: text };
+		}
+	}
 	if (!response.ok) {
 		throw new Error(data?.message || `Request failed: ${response.status}`);
 	}
 	return data;
+}
+
+async function togglePostLike(postId) {
+	return requestJson(`/posts/${postId}/like`, {
+		method: "POST",
+		body: JSON.stringify({ userId: state.currentUserId })
+	});
+}
+
+async function toggleCommentLike(postId, commentId) {
+	return requestJson(`/posts/${postId}/comments/${commentId}/like`, {
+		method: "POST",
+		body: JSON.stringify({ userId: state.currentUserId })
+	});
 }
 
 function mapComment(comment) {
@@ -119,6 +150,16 @@ function mapComment(comment) {
 }
 
 function mapPost(post) {
+	const attachment = post.attachment
+		? {
+			type: post.attachment.type || null,
+			name: post.attachment.name || "",
+			url: post.attachment.url || "",
+			text: post.attachment.text || "",
+			originalPostId: post.attachment.originalPostId ? String(post.attachment.originalPostId) : null
+		}
+		: null;
+
 	return {
 		id: String(post._id || post.id),
 		userId: post.userId,
@@ -127,7 +168,7 @@ function mapPost(post) {
 		createdAt: post.createdAt ? new Date(post.createdAt) : new Date(),
 		updatedAt: post.updatedAt ? new Date(post.updatedAt) : new Date(),
 		likedBy: new Set(Array.isArray(post.likedBy) ? post.likedBy : []),
-		attachment: post.attachment || null,
+		attachment,
 		replies: (post.replies || []).map(mapComment)
 	};
 }
@@ -258,7 +299,7 @@ function closeListModal() {
 }
 
 function renderMiniProfile() {
-	const user = users[state.selectedProfileId];
+	const user = getUserInfo(state.selectedProfileId);
 	const isMe = user.id === state.currentUserId;
 	const isFollowing = state.following.has(user.id);
 	const isBlocked = state.blockedUserIds.has(user.id);
@@ -313,7 +354,7 @@ function getFilteredPosts() {
 }
 
 function buildReplyItem(reply) {
-	const user = users[reply.userId];
+	const user = getUserInfo(reply.userId);
 	const item = document.createElement("div");
 	item.className = "reply-item";
 	item.innerHTML = `
@@ -350,22 +391,6 @@ async function addCommentToPost(postId, text, parentId = null) {
 
 function getCommentChildren(post, parentId) {
 	return (post.replies || []).filter(reply => reply.parentId === parentId);
-}
-
-function toggleCommentLike(postId, commentId) {
-	const post = state.posts.find(item => item.id === postId);
-	if (!post) {
-		return;
-	}
-	const comment = post.replies.find(item => item.id === commentId);
-	if (!comment) {
-		return;
-	}
-	if (comment.likedBy.has(state.currentUserId)) {
-		comment.likedBy.delete(state.currentUserId);
-	} else {
-		comment.likedBy.add(state.currentUserId);
-	}
 }
 
 function deleteComment(postId, commentId) {
@@ -432,7 +457,7 @@ function renderAttachment(container, post) {
 			container.appendChild(repostBlock);
 			return;
 		}
-		const author = users[original.userId];
+		const author = getUserInfo(original.userId);
 		repostBlock.innerHTML = `
 			<div class="name">${author.name} · @${author.username}</div>
 			<div class="title">${original.title || "Untitled post"}</div>
@@ -461,7 +486,7 @@ function renderProfileView() {
 		return;
 	}
 
-	const user = users[state.selectedProfileId];
+	const user = getUserInfo(state.selectedProfileId);
 	const isMe = user.id === state.currentUserId;
 	const isFollowing = state.following.has(user.id);
 	const isBlocked = state.blockedUserIds.has(user.id);
@@ -583,7 +608,7 @@ function renderPosts() {
 	}
 
 	posts.forEach(post => {
-		const user = users[post.userId];
+		const user = getUserInfo(post.userId);
 		const node = refs.postTemplate.content.cloneNode(true);
 		const article = node.querySelector(".post-item");
 
@@ -679,12 +704,14 @@ function renderPosts() {
 		likeBtn.textContent = `${liked ? "Liked" : "Like"} (${post.likedBy.size})`;
 		likeBtn.classList.toggle("liked", liked);
 		likeBtn.addEventListener("click", () => {
-			if (liked) {
-				post.likedBy.delete(state.currentUserId);
-			} else {
-				post.likedBy.add(state.currentUserId);
-			}
-			rerender();
+			togglePostLike(post.id)
+				.then(updatedPost => {
+					syncPostFromServer(updatedPost);
+					rerender();
+				})
+				.catch(error => {
+					console.error("Failed to toggle post like:", error);
+				});
 		});
 
 		const inlineCommentInput = node.querySelector(".inline-comment-input");
@@ -730,7 +757,7 @@ function renderCommentThread(post) {
 	function drawBranch(parentId, level) {
 		const children = getCommentChildren(post, parentId);
 		children.forEach(comment => {
-			const commenter = users[comment.userId];
+			const commenter = getUserInfo(comment.userId);
 			const row = document.createElement("div");
 			row.className = `comment-item level-${Math.min(level, 4)}`;
 			const liked = comment.likedBy.has(state.currentUserId);
@@ -763,9 +790,18 @@ function renderCommentThread(post) {
 			});
 
 			likeBtn.addEventListener("click", () => {
-				toggleCommentLike(post.id, comment.id);
-				rerender();
-				openPostDetail(post.id);
+				toggleCommentLike(post.id, comment.id)
+					.then(updatedPost => {
+						if (!updatedPost) {
+							return;
+						}
+						syncPostFromServer(updatedPost);
+						rerender();
+						openPostDetail(post.id);
+					})
+					.catch(error => {
+						console.error("Failed to toggle comment like:", error);
+					});
 			});
 
 			sendBtn.addEventListener("click", () => {
@@ -809,7 +845,7 @@ function openPostDetail(postId) {
 		return;
 	}
 	state.activeDetailPostId = postId;
-	const user = users[post.userId];
+	const user = getUserInfo(post.userId);
 
 	refs.postDetailCard.innerHTML = `
 		<header class="post-detail-head">
@@ -861,13 +897,15 @@ function openPostDetail(postId) {
 	});
 
 	detailLikeBtn.addEventListener("click", () => {
-		if (post.likedBy.has(state.currentUserId)) {
-			post.likedBy.delete(state.currentUserId);
-		} else {
-			post.likedBy.add(state.currentUserId);
-		}
-		rerender();
-		openPostDetail(post.id);
+		togglePostLike(post.id)
+			.then(updatedPost => {
+				syncPostFromServer(updatedPost);
+				rerender();
+				openPostDetail(post.id);
+			})
+			.catch(error => {
+				console.error("Failed to toggle post like:", error);
+			});
 	});
 
 	detailCommentSend.addEventListener("click", () => {
@@ -909,7 +947,7 @@ function openRepostModal(postId, prefill = null) {
 	refs.repostTitle.value = prefill?.title || "";
 	refs.repostContent.value = prefill?.content || "";
 	refs.repostCharCount.textContent = `${refs.repostContent.value.length}/500`;
-	const user = users[post.userId];
+	const user = getUserInfo(post.userId);
 	refs.repostOriginalPreview.innerHTML = `
 		<div class="name">${user.name} · @${user.username}</div>
 		<div class="title">${post.title || "Untitled post"}</div>
@@ -936,17 +974,12 @@ async function createRepost() {
 	}
 
 	try {
-		const created = await requestJson("/posts", {
+		const created = await requestJson(`/posts/${state.activeRepostPostId}/repost`, {
 			method: "POST",
 			body: JSON.stringify({
 				userId: state.currentUserId,
 				title: title || "Repost",
-				content,
-				attachment: {
-					type: "repost",
-					name: "Reposted post",
-					originalPostId: state.activeRepostPostId
-				}
+				content
 			})
 		});
 		syncPostFromServer(created);
