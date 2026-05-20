@@ -186,6 +186,33 @@ button:focus {
 	line-height: 1.4;
 }
 
+.error-notification {
+	position: fixed;
+	top: 20px;
+	right: 20px;
+	max-width: 400px;
+	padding: 14px 16px;
+	background: var(--danger);
+	color: #fff;
+	border-radius: 10px;
+	box-shadow: 0 8px 20px rgba(205, 61, 61, 0.25);
+	z-index: 9999;
+	font-weight: 600;
+	line-height: 1.4;
+	animation: slideInDown 0.3s ease;
+}
+
+@keyframes slideInDown {
+	from {
+		opacity: 0;
+		transform: translateY(-20px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
 .btn-primary {
 	border: 0;
 	background: linear-gradient(135deg, var(--accent), #24a1ea);

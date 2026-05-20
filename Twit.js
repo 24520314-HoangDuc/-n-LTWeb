@@ -54,7 +54,8 @@ const refs = {
 	createPostBtn: document.getElementById("createPostBtn"),
 	feedFilter: document.getElementById("feedFilter"),
 	feedList: document.getElementById("feedList"),
-	postTemplate: document.getElementById("postTemplate")
+	postTemplate: document.getElementById("postTemplate"),
+	errorNotification: document.getElementById("errorNotification")
 };
 
 let commentIdSeed = 1000;
@@ -323,6 +324,7 @@ function renderMiniProfile() {
 	const miniAvatarBtn = refs.activeProfile.querySelector(".avatar-btn");
 	if (miniAvatarBtn) {
 		miniAvatarBtn.addEventListener("click", () => {
+			window.scrollTo(0, 0);
 			if (state.viewMode === "home") {
 				selectProfile(state.currentUserId, "profile");
 			}
@@ -526,6 +528,13 @@ function renderProfileView() {
 		</div>
 	`;
 
+	const bigAvatar = refs.profileView.querySelector(".big-avatar");
+	if (bigAvatar) {
+		bigAvatar.addEventListener("click", () => {
+			window.scrollTo(0, 0);
+		});
+	}
+
 	const profileFollowBtn = refs.profileView.querySelector("[data-profile-follow]");
 	if (profileFollowBtn) {
 		profileFollowBtn.addEventListener("click", () => {
@@ -616,7 +625,10 @@ function renderPosts() {
 		const avatarBtn = node.querySelector(".avatar-btn");
 		avatarBtn.textContent = user.name[0];
 		avatarBtn.style.background = user.color;
-		avatarBtn.addEventListener("click", () => selectProfile(user.id, "profile"));
+		avatarBtn.addEventListener("click", () => {
+			window.scrollTo(0, 0);
+			selectProfile(user.id, "profile");
+		});
 
 		const nameBtn = node.querySelector(".name-btn");
 		nameBtn.textContent = user.name;
@@ -711,7 +723,9 @@ function renderPosts() {
 					rerender();
 				})
 				.catch(error => {
-					console.error("Failed to toggle post like:", error);
+					const errorMsg = error instanceof Error ? error.message : String(error || "Unknown error");
+					console.error("Failed to toggle post like:", errorMsg);
+					showErrorNotification(`Failed to like: ${errorMsg}`);
 				});
 		});
 
@@ -1036,6 +1050,14 @@ function clearComposerError() {
 function showComposerError(message) {
 	refs.composerError.textContent = message;
 	refs.composerError.classList.remove("hidden");
+}
+
+function showErrorNotification(message) {
+	refs.errorNotification.textContent = message;
+	refs.errorNotification.classList.remove("hidden");
+	setTimeout(() => {
+		refs.errorNotification.classList.add("hidden");
+	}, 4000);
 }
 
 async function createPost() {
