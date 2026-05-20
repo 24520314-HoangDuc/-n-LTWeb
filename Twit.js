@@ -17,8 +17,11 @@ const state = {
 	replyModeByPost: new Map(),
 	activeRepostPostId: null,
 	activeDetailPostId: null,
+	activeImageViewer: null,
+	imageViewerScale: 1,
 	isLoadingPosts: true,
-	loadError: ""
+	loadError: "",
+	composerAttachments: []
 };
 
 const refs = {
@@ -28,6 +31,11 @@ const refs = {
 	closeComposerBtn: document.getElementById("closeComposerBtn"),
 	composerModal: document.getElementById("composerModal"),
 	repostModal: document.getElementById("repostModal"),
+	imageViewerModal: document.getElementById("imageViewerModal"),
+	imageViewerImg: document.getElementById("imageViewerImg"),
+	imageViewerTitle: document.getElementById("imageViewerTitle"),
+	imageViewerCaption: document.getElementById("imageViewerCaption"),
+	closeImageViewerBtn: document.getElementById("closeImageViewerBtn"),
 	closeRepostBtn: document.getElementById("closeRepostBtn"),
 	repostTitle: document.getElementById("repostTitle"),
 	repostContent: document.getElementById("repostContent"),
@@ -50,9 +58,12 @@ const refs = {
 	postInput: document.getElementById("postInput"),
 	postAttachment: document.getElementById("postAttachment"),
 	attachmentName: document.getElementById("attachmentName"),
+	attachmentsList: document.getElementById("attachmentsList"),
 	charCount: document.getElementById("charCount"),
 	composerError: document.getElementById("composerError"),
 	createPostBtn: document.getElementById("createPostBtn"),
+	cancelPostBtn: document.getElementById("cancelPostBtn"),
+	removeAttachmentBtn: document.getElementById("removeAttachmentBtn"),
 	feedFilter: document.getElementById("feedFilter"),
 	feedList: document.getElementById("feedList"),
 	postTemplate: document.getElementById("postTemplate"),
@@ -82,6 +93,41 @@ function openConfirmDialog(message, action) {
 	refs.confirmMessage.textContent = message;
 	refs.confirmModal.classList.remove("hidden");
 	refs.confirmModal.setAttribute("aria-hidden", "false");
+}
+
+function openImageViewer(src, title, caption = "") {
+	if (!src) {
+		return;
+	}
+
+	state.activeImageViewer = { src, title, caption };
+	state.imageViewerScale = 1;
+	refs.imageViewerTitle.textContent = title || "Image preview";
+	refs.imageViewerCaption.textContent = caption || "";
+	refs.imageViewerImg.src = src;
+	refs.imageViewerImg.alt = title || "Preview image";
+	refs.imageViewerImg.style.transform = "scale(1)";
+	refs.imageViewerModal.classList.remove("hidden");
+	refs.imageViewerModal.setAttribute("aria-hidden", "false");
+}
+
+function setImageViewerScale(nextScale) {
+	const scale = Math.min(4, Math.max(0.5, Number(nextScale) || 1));
+	state.imageViewerScale = scale;
+	refs.imageViewerImg.style.transform = `scale(${scale})`;
+}
+
+function zoomImageViewer(delta) {
+	setImageViewerScale(state.imageViewerScale + delta);
+}
+
+function closeImageViewer() {
+	refs.imageViewerModal.classList.add("hidden");
+	refs.imageViewerModal.setAttribute("aria-hidden", "true");
+	refs.imageViewerImg.src = "";
+	refs.imageViewerImg.style.transform = "scale(1)";
+	state.activeImageViewer = null;
+	state.imageViewerScale = 1;
 }
 
 function closeConfirmDialog() {
@@ -164,6 +210,15 @@ function mapPost(post) {
 		}
 		: null;
 
+	const attachments = Array.isArray(post.attachments)
+		? post.attachments.map(att => ({
+			type: att.type || null,
+			name: att.name || "",
+			url: att.url || "",
+			text: att.text || ""
+		}))
+		: [];
+
 	return {
 		id: String(post._id || post.id),
 		userId: post.userId,
@@ -173,6 +228,7 @@ function mapPost(post) {
 		updatedAt: post.updatedAt ? new Date(post.updatedAt) : new Date(),
 		likedBy: new Set(Array.isArray(post.likedBy) ? post.likedBy : []),
 		attachment,
+		attachments,
 		replies: (post.replies || []).map(mapComment)
 	};
 }
@@ -203,6 +259,15 @@ function syncRelationState() {
 }
 
 function syncPostFromServer(postData) {
+	console.log("Syncing post from server:", postData);
+	console.log("  Attachments in response:", postData.attachments ? postData.attachments.length : 0);
+	if (postData.attachments && postData.attachments.length > 0) {
+		postData.attachments.forEach((att, i) => {
+			const size = att.url ? (att.url.length / 1024 / 1024).toFixed(2) + 'MB' : 
+						(att.text ? (att.text.length / 1024).toFixed(2) + 'KB' : '0B');
+			console.log(`    [${i}] ${att.type}: ${att.name} (${size})`);
+		});
+	}
 	const mapped = mapPost(postData);
 	const index = state.posts.findIndex(post => post.id === mapped.id);
 	if (index >= 0) {
@@ -220,10 +285,24 @@ async function loadPostsFromMongo() {
 	try {
 		const posts = await requestJson("/posts", { method: "GET" });
 		state.posts = Array.isArray(posts) ? posts.map(mapPost) : [];
+		
+		console.log(`[LOAD] Loaded ${state.posts.length} posts from database`);
+		state.posts.forEach((post, i) => {
+			if (post.attachments && post.attachments.length > 0) {
+				console.log(`  Post ${i} (${post.id}): ${post.attachments.length} attachment(s)`);
+				post.attachments.forEach((att, j) => {
+					const size = att.url ? (att.url.length / 1024 / 1024).toFixed(2) + 'MB' : 
+								(att.text ? (att.text.length / 1024).toFixed(2) + 'KB' : '0B');
+					console.log(`    [${j}] ${att.type}: ${att.name} (${size})`);
+				});
+			}
+		});
+		
 		normalizeComments();
 	} catch (error) {
 		state.loadError = error.message;
 		state.posts = [];
+		console.error('[LOAD ERROR]', error);
 	} finally {
 		state.isLoadingPosts = false;
 		rerender();
@@ -470,21 +549,75 @@ function deleteComment(postId, commentId) {
 
 function renderAttachment(container, post) {
 	container.innerHTML = "";
+
+	// Handle new attachments array
+	if (Array.isArray(post.attachments) && post.attachments.length > 0) {
+		const images = post.attachments.filter(a => a.type === "image");
+		const videos = post.attachments.filter(a => a.type === "video");
+		const audios = post.attachments.filter(a => a.type === "audio");
+		const texts = post.attachments.filter(a => a.type === "text");
+
+		if (images.length > 0) {
+			const grid = document.createElement("div");
+			grid.className = "attachment-images-grid";
+			images.forEach(img => {
+				const img_el = document.createElement("img");
+				img_el.src = img.url;
+				img_el.alt = img.name;
+				img_el.className = "attachment-image";
+				img_el.addEventListener("click", event => {
+					event.stopPropagation();
+					openImageViewer(img.url, img.name, "Tap outside or press Esc to close");
+				});
+				grid.appendChild(img_el);
+			});
+			container.appendChild(grid);
+		}
+
+		if (videos.length > 0) {
+			const video = document.createElement("video");
+			video.src = videos[0].url;
+			video.controls = true;
+			video.className = "attachment-video";
+			container.appendChild(video);
+		}
+
+		if (audios.length > 0) {
+			const audio = document.createElement("audio");
+			audio.src = audios[0].url;
+			audio.controls = true;
+			audio.className = "attachment-audio";
+			container.appendChild(audio);
+		}
+
+		if (texts.length > 0) {
+			const textBlock = document.createElement("div");
+			textBlock.className = "attachment-text-block";
+			textBlock.textContent = texts[0].text;
+			container.appendChild(textBlock);
+		}
+
+		container.classList.remove("hidden");
+		return;
+	}
+
+	// Handle legacy attachment (repost)
 	if (!post.attachment || (!post.attachment.type && !post.attachment.name && !post.attachment.url && !post.attachment.text && !post.attachment.originalPostId)) {
 		container.classList.add("hidden");
 		return;
 	}
 
 	container.classList.remove("hidden");
-	const nameNode = document.createElement("div");
-	nameNode.className = "attachment-name";
-	nameNode.textContent = `Attachment: ${post.attachment.name}`;
-	container.appendChild(nameNode);
 
 	if (post.attachment.type === "image") {
 		const image = document.createElement("img");
 		image.src = post.attachment.url;
 		image.alt = post.attachment.name;
+		image.className = "attachment-image";
+		image.addEventListener("click", event => {
+			event.stopPropagation();
+			openImageViewer(post.attachment.url, post.attachment.name, "Tap outside or press Esc to close");
+		});
 		container.appendChild(image);
 		return;
 	}
@@ -493,6 +626,7 @@ function renderAttachment(container, post) {
 		const audio = document.createElement("audio");
 		audio.controls = true;
 		audio.src = post.attachment.url;
+		audio.className = "attachment-audio";
 		container.appendChild(audio);
 		return;
 	}
@@ -501,6 +635,7 @@ function renderAttachment(container, post) {
 		const video = document.createElement("video");
 		video.controls = true;
 		video.src = post.attachment.url;
+		video.className = "attachment-video";
 		container.appendChild(video);
 		return;
 	}
@@ -529,7 +664,7 @@ function renderAttachment(container, post) {
 	}
 
 	const textBlock = document.createElement("div");
-	textBlock.className = "attachment-text";
+	textBlock.className = "attachment-text-block";
 	textBlock.textContent = post.attachment.text || "Unable to preview this text file.";
 	container.appendChild(textBlock);
 }
@@ -1127,6 +1262,10 @@ function resetComposer() {
 	refs.postAttachment.value = "";
 	refs.attachmentName.textContent = "No file selected";
 	refs.charCount.textContent = "0/500";
+	state.composerAttachments = [];
+	refs.attachmentsList.innerHTML = "";
+	refs.attachmentsList.classList.add("hidden");
+	refs.removeAttachmentBtn.style.display = "none";
 	clearComposerError();
 }
 
@@ -1136,6 +1275,10 @@ function openComposer() {
 	refs.postAttachment.value = "";
 	refs.attachmentName.textContent = "No file selected";
 	refs.charCount.textContent = "0/500";
+	refs.removeAttachmentBtn.style.display = "none";
+	state.composerAttachments = [];
+	refs.attachmentsList.innerHTML = "";
+	refs.attachmentsList.classList.add("hidden");
 	clearComposerError();
 	refs.composerModal.classList.remove("hidden");
 	refs.composerModal.setAttribute("aria-hidden", "false");
@@ -1172,102 +1315,97 @@ async function createPost() {
 		return;
 	}
 
-	const selectedFile = refs.postAttachment.files[0] || null;
-
-	async function finalizePost(attachment) {
-		try {
-			clearComposerError();
-			const created = await requestJson("/posts", {
-				method: "POST",
-				body: JSON.stringify({
-					userId: state.currentUserId,
-					title: title || "Untitled post",
-					content,
-					attachment
-				})
-			});
-			syncPostFromServer(created);
-			resetComposer();
-			closeComposer();
-			state.viewMode = "home";
-			refs.feedFilter.value = "all";
-			rerender();
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error || "Unknown error");
-			showComposerError(`Unable to post: ${errorMessage}`);
-			console.error("Failed to create post:", error);
-		}
-	}
-
-	function readFileAsDataUrl(file) {
-		return new Promise((resolve, reject) => {
-			const reader = new FileReader();
-			reader.onload = () => resolve(String(reader.result || ""));
-			reader.onerror = () => reject(new Error("Cannot read file."));
-			reader.readAsDataURL(file);
+	try {
+		clearComposerError();
+		const payload = {
+			userId: state.currentUserId,
+			title: title || "Untitled post",
+			content,
+			attachments: state.composerAttachments.length > 0 ? state.composerAttachments : []
+		};
+		
+		console.log("Creating post with payload:", payload);
+		console.log(`Payload size: ${(JSON.stringify(payload).length / 1024 / 1024).toFixed(2)}MB`);
+		
+		const created = await requestJson("/posts", {
+			method: "POST",
+			body: JSON.stringify(payload)
 		});
+		
+		console.log("Post created successfully:", created);
+		syncPostFromServer(created);
+		resetComposer();
+		closeComposer();
+		state.viewMode = "home";
+		refs.feedFilter.value = "all";
+		rerender();
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error || "Unknown error");
+		console.error("Failed to create post:", error);
+		showComposerError(`Unable to post: ${errorMessage}`);
 	}
+}
 
-	if (!selectedFile) {
-		await finalizePost(null);
+function renderComposerAttachments() {
+	refs.attachmentsList.innerHTML = "";
+	
+	if (state.composerAttachments.length === 0) {
+		refs.attachmentsList.classList.add("hidden");
+		refs.attachmentName.textContent = "No file selected";
 		return;
 	}
 
-	if (selectedFile.type.startsWith("audio/")) {
-		try {
-			await finalizePost({
-				type: "audio",
-				name: selectedFile.name,
-				url: await readFileAsDataUrl(selectedFile)
-			});
-		} catch {
-			await finalizePost(null);
-		}
-		return;
-	}
+	refs.attachmentsList.classList.remove("hidden");
+	refs.attachmentName.textContent = `${state.composerAttachments.length} file(s) selected`;
 
-	if (selectedFile.type.startsWith("image/")) {
-		try {
-			await finalizePost({
-				type: "image",
-				name: selectedFile.name,
-				url: await readFileAsDataUrl(selectedFile)
-			});
-		} catch {
-			await finalizePost(null);
-		}
-		return;
-	}
+	const images = state.composerAttachments.filter(a => a.type === "image");
+	const videos = state.composerAttachments.filter(a => a.type === "video");
+	const audios = state.composerAttachments.filter(a => a.type === "audio");
+	const texts = state.composerAttachments.filter(a => a.type === "text");
 
-	if (selectedFile.type.startsWith("video/")) {
-		try {
-			await finalizePost({
-				type: "video",
-				name: selectedFile.name,
-				url: await readFileAsDataUrl(selectedFile)
-			});
-		} catch {
-			await finalizePost(null);
-		}
-		return;
-	}
-
-	const reader = new FileReader();
-	reader.onload = () => {
-		finalizePost({
-			type: "text",
-			name: selectedFile.name,
-			text: String(reader.result || "")
+	if (images.length > 0) {
+		const imgGrid = document.createElement("div");
+		imgGrid.className = "attachment-preview-grid";
+		images.forEach(img => {
+			const container = document.createElement("div");
+			container.className = "attachment-preview-item";
+			const preview = document.createElement("img");
+			preview.src = img.url;
+			preview.alt = img.name;
+			container.appendChild(preview);
+			imgGrid.appendChild(container);
 		});
-	};
-	reader.onerror = () => {
-		finalizePost({
-			type: "text",
-			name: selectedFile.name,
-			text: "Cannot read this file content."
-		});
-	};
-	reader.readAsText(selectedFile);
+		refs.attachmentsList.appendChild(imgGrid);
+	}
+
+	if (videos.length > 0) {
+		const videoContainer = document.createElement("div");
+		videoContainer.className = "attachment-preview-item video-preview";
+		const video = document.createElement("video");
+		video.src = videos[0].url;
+		video.controls = true;
+		videoContainer.appendChild(video);
+		refs.attachmentsList.appendChild(videoContainer);
+	}
+
+	if (audios.length > 0) {
+		const audioContainer = document.createElement("div");
+		audioContainer.className = "attachment-preview-item audio-preview";
+		const audio = document.createElement("audio");
+		audio.src = audios[0].url;
+		audio.controls = true;
+		audioContainer.appendChild(audio);
+		refs.attachmentsList.appendChild(audioContainer);
+	}
+
+	if (texts.length > 0) {
+		const textContainer = document.createElement("div");
+		textContainer.className = "attachment-preview-item text-preview";
+		const textBlock = document.createElement("div");
+		textBlock.textContent = texts[0].text.substring(0, 200) + (texts[0].text.length > 200 ? "..." : "");
+		textContainer.appendChild(textBlock);
+		refs.attachmentsList.appendChild(textContainer);
+	}
 }
 
 function bindEvents() {
@@ -1297,6 +1435,19 @@ function bindEvents() {
 	});
 
 	refs.closeRepostBtn.addEventListener("click", closeRepostModal);
+	refs.imageViewerModal.addEventListener("wheel", event => {
+		if (!isModalOpen(refs.imageViewerModal)) {
+			return;
+		}
+		event.preventDefault();
+		zoomImageViewer(event.deltaY < 0 ? 0.12 : -0.12);
+	}, { passive: false });
+	refs.closeImageViewerBtn.addEventListener("click", closeImageViewer);
+	refs.imageViewerModal.addEventListener("click", event => {
+		if (event.target.dataset.closeImageViewer === "true") {
+			closeImageViewer();
+		}
+	});
 	refs.repostModal.addEventListener("click", event => {
 		if (event.target.dataset.closeRepost === "true") {
 			closeRepostModal();
@@ -1352,9 +1503,111 @@ function bindEvents() {
 		refs.charCount.textContent = `${refs.postInput.value.length}/500`;
 	});
 
-	refs.postAttachment.addEventListener("change", () => {
-		const file = refs.postAttachment.files[0];
-		refs.attachmentName.textContent = file ? file.name : "No file selected";
+	refs.postAttachment.addEventListener("change", async () => {
+		const files = Array.from(refs.postAttachment.files);
+		if (files.length === 0) {
+			state.composerAttachments = [];
+			refs.attachmentsList.innerHTML = "";
+			refs.attachmentsList.classList.add("hidden");
+			refs.attachmentName.textContent = "No file selected";
+			refs.removeAttachmentBtn.style.display = "none";
+			return;
+		}
+
+		// Validate and convert files to attachments
+		const newAttachments = [];
+		const typeCount = {};
+		const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+		
+		for (const file of files) {
+			let type = null;
+			let content = null;
+
+			// File size validation
+			if (file.size > MAX_FILE_SIZE) {
+				showComposerError(`File "${file.name}" is too large (max 10MB)`);
+				continue;
+			}
+
+			if (file.type.startsWith("image/")) {
+				type = "image";
+			} else if (file.type.startsWith("video/")) {
+				type = "video";
+			} else if (file.type.startsWith("audio/")) {
+				type = "audio";
+			} else if (file.name.endsWith(".txt")) {
+				type = "text";
+			}
+
+			if (!type) {
+				showComposerError(`File "${file.name}" is not supported`);
+				continue;
+			}
+
+			// Count files by type
+			typeCount[type] = (typeCount[type] || 0) + 1;
+
+			// Validate constraints
+			if (['video', 'audio', 'text'].includes(type) && typeCount[type] > 1) {
+				showComposerError(`Only 1 ${type} file allowed`);
+				continue;
+			}
+
+			// Read file
+			if (type === "text") {
+				const text = await new Promise((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => resolve(String(reader.result || ""));
+					reader.onerror = () => reject(new Error("Cannot read file"));
+					reader.readAsText(file);
+				});
+				newAttachments.push({ type, name: file.name, text });
+			} else {
+				const url = await new Promise((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => {
+						const dataUrl = String(reader.result || "");
+						console.log(`File "${file.name}" converted to data URL, size: ${(dataUrl.length / 1024 / 1024).toFixed(2)}MB`);
+						resolve(dataUrl);
+					};
+					reader.onerror = () => reject(new Error("Cannot read file"));
+					reader.readAsDataURL(file);
+				});
+				newAttachments.push({ type, name: file.name, url });
+			}
+		}
+
+		state.composerAttachments = newAttachments;
+		console.log(`Total attachments to send: ${newAttachments.length}`);
+		newAttachments.forEach((att, i) => {
+			const size = att.url ? (att.url.length / 1024 / 1024).toFixed(2) : (att.text ? (att.text.length / 1024).toFixed(2) : '0') + 'KB';
+			console.log(`  [${i}] ${att.type}: ${att.name} (${size})`);
+		});
+		renderComposerAttachments();
+		refs.removeAttachmentBtn.style.display = newAttachments.length > 0 ? "inline-block" : "none";
+	});
+
+	refs.removeAttachmentBtn.addEventListener("click", () => {
+		refs.postAttachment.value = "";
+		state.composerAttachments = [];
+		refs.attachmentName.textContent = "No file selected";
+		refs.attachmentsList.innerHTML = "";
+		refs.attachmentsList.classList.add("hidden");
+		refs.removeAttachmentBtn.style.display = "none";
+	});
+
+	refs.cancelPostBtn.addEventListener("click", () => {
+		refs.postTitle.value = "";
+		refs.postInput.value = "";
+		refs.postAttachment.value = "";
+		refs.attachmentName.textContent = "No file selected";
+		refs.charCount.textContent = "0/500";
+		refs.removeAttachmentBtn.style.display = "none";
+		state.composerAttachments = [];
+		refs.attachmentsList.innerHTML = "";
+		refs.attachmentsList.classList.add("hidden");
+		clearComposerError();
+		closeComposer();
 	});
 
 	refs.createPostBtn.addEventListener("click", createPost);
@@ -1375,6 +1628,11 @@ function bindEvents() {
 			if (isModalOpen(refs.repostModal)) {
 				event.preventDefault();
 				closeRepostModal();
+				return;
+			}
+			if (isModalOpen(refs.imageViewerModal)) {
+				event.preventDefault();
+				closeImageViewer();
 				return;
 			}
 			if (isModalOpen(refs.composerModal)) {

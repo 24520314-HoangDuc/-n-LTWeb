@@ -5,8 +5,11 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+const path = require('path');
+
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
@@ -18,6 +21,9 @@ app.use((req, res, next) => {
 
     next();
 });
+
+// Serve frontend static files so the app is loaded over http://localhost:PORT
+app.use(express.static(path.join(__dirname)));
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.DB_CONNECTION_STRING || 'mongodb://USERNAME:PASSWORD@HOST:27017/DATABASE_NAME';
@@ -53,6 +59,19 @@ function toAttachmentPacket(attachment) {
     };
 }
 
+function toAttachmentsPacket(attachments) {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+        return [];
+    }
+
+    return attachments.map(att => ({
+        type: att.type || null,
+        name: att.name || "",
+        url: att.url || "",
+        text: att.text || ""
+    }));
+}
+
 function toPostPacket(post) {
     return {
         id: String(post._id),
@@ -60,6 +79,7 @@ function toPostPacket(post) {
         title: post.title,
         content: post.content,
         attachment: toAttachmentPacket(post.attachment),
+        attachments: toAttachmentsPacket(post.attachments),
         likedBy: Array.isArray(post.likedBy) ? post.likedBy : [],
         replies: Array.isArray(post.replies) ? post.replies.map(toCommentPacket) : [],
         hiddenBy: Array.isArray(post.hiddenBy) ? post.hiddenBy : [],
@@ -118,6 +138,16 @@ const postSchema = new mongoose.Schema({
         text: { type: String, default: '' },
         originalPostId: { type: mongoose.Schema.Types.ObjectId, default: null }
     },
+    attachments: [{
+        type: {
+            type: String,
+            enum: ['image', 'audio', 'video', 'text'],
+            required: true
+        },
+        name: { type: String, required: true },
+        url: { type: String, default: '' },
+        text: { type: String, default: '' }
+    }],
     likedBy: [{ type: String }],
     replies: [commentSchema],
     hiddenBy: [{ type: String }],
@@ -223,21 +253,57 @@ app.get('/api/posts/:id', async (req, res) => {
 
 app.post('/api/posts', async (req, res) => {
     try {
-        const { userId, title, content, attachment } = req.body;
+        const { userId, title, content, attachment, attachments } = req.body;
 
         if (!userId || !content) {
             return res.status(400).json({ message: 'userId and content are required' });
+        }
+
+        console.log(`[POST] Creating post for user ${userId}`);
+        console.log(`  Attachments received: ${Array.isArray(attachments) ? attachments.length : 0}`);
+        
+        if (Array.isArray(attachments) && attachments.length > 0) {
+            attachments.forEach((att, i) => {
+                const size = att.url ? (att.url.length / 1024 / 1024).toFixed(2) + 'MB' : 
+                            (att.text ? (att.text.length / 1024).toFixed(2) + 'KB' : '0B');
+                console.log(`    [${i}] ${att.type}: ${att.name} (${size})`);
+            });
+        }
+
+        // Validate attachments based on type
+        let validatedAttachments = [];
+        if (Array.isArray(attachments) && attachments.length > 0) {
+            const types = {};
+            for (const att of attachments) {
+                if (!att.type) continue;
+                
+                // Count by type
+                types[att.type] = (types[att.type] || 0) + 1;
+                
+                // Validate constraints
+                if (['video', 'audio', 'text'].includes(att.type) && types[att.type] > 1) {
+                    return res.status(400).json({ 
+                        message: `Only 1 ${att.type} file allowed, got ${types[att.type]}` 
+                    });
+                }
+            }
+            validatedAttachments = attachments;
         }
 
         const newPost = await Post.create({
             userId,
             title: title || 'Untitled post',
             content,
-            attachment: attachment || null
+            attachment: attachment || null,
+            attachments: validatedAttachments
         });
+
+        console.log(`[POST] Post created with ID: ${newPost._id}`);
+        console.log(`  Stored attachments: ${newPost.attachments ? newPost.attachments.length : 0}`);
 
         sendPost(res, newPost, 201);
     } catch (err) {
+        console.error('[POST ERROR]', err.message);
         res.status(500).json({ message: 'Failed to create post', error: err.message });
     }
 });
@@ -470,6 +536,36 @@ app.post('/api/posts/:id/repost', async (req, res) => {
         sendPost(res, repost, 201);
     } catch (err) {
         res.status(500).json({ message: 'Failed to create repost', error: err.message });
+    }
+});
+
+app.post('/api/upload', (req, res) => {
+    try {
+        const { type, name, url, text } = req.body;
+
+        if (!type || !name) {
+            return res.status(400).json({ message: 'type and name are required' });
+        }
+
+        if (!['image', 'audio', 'video', 'text'].includes(type)) {
+            return res.status(400).json({ message: 'Invalid file type' });
+        }
+
+        if (type === 'text' && !text) {
+            return res.status(400).json({ message: 'text content is required for text files' });
+        }
+
+        if (['image', 'audio', 'video'].includes(type) && !url) {
+            return res.status(400).json({ message: `url is required for ${type} files` });
+        }
+
+        const attachment = { type, name };
+        if (url) attachment.url = url;
+        if (text) attachment.text = text;
+
+        res.json({ ok: true, attachment });
+    } catch (err) {
+        res.status(500).json({ message: 'Upload failed', error: err.message });
     }
 });
 
